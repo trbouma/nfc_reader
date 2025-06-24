@@ -9,6 +9,9 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "monstr (>=0.1.9,<0.2.0)",
+    "nfcpy (>=1.0.4,<2.0.0)",
+    "pyscard (>=2.2.2,<3.0.0)"
 ]
 
 
