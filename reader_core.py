@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 import string
 from typing import Any
 
+from monstr.encrypt import Keys
+import requests
+import secp256k1
 from smartcard.Exceptions import CardConnectionException, NoCardException, SmartcardException
 from smartcard.System import readers
 from smartcard.pcsc.PCSCExceptions import EstablishContextException
@@ -30,6 +34,18 @@ class CardReadResult:
     raw_data: bytes
     nembed: str | None
     parsed_payload: dict[str, Any] | None
+
+
+def extract_default_amount(parsed_payload: dict[str, Any] | None) -> int:
+    if parsed_payload is None:
+        raise NFCReaderError("No parsed payload is available for this card.")
+
+    amount = parsed_payload.get("a")
+    if amount is None:
+        raise NFCReaderError("The card payload does not contain a default amount field ('a').")
+    if not isinstance(amount, int):
+        raise NFCReaderError(f"The default amount must be an integer, got {type(amount).__name__}.")
+    return amount
 
 
 def list_readers() -> list[Any]:
@@ -84,6 +100,9 @@ def read_full_user_memory(connection, start_page: int = 4, end_page: int = 130) 
         except NoCardException as exc:
             raise NFCReaderError("Card was removed during the read.") from exc
         except SmartcardException as exc:
+            error_message = str(exc)
+            if "Card returned no valid response" in error_message:
+                raise NFCReaderError("Card was removed during the read.") from exc
             raise NFCReaderError(f"Read failed at page {page}: {exc}") from exc
         if (sw1, sw2) != (0x90, 0x00):
             raise NFCReaderError(f"Read failed at page {page}: SW1={sw1:02X}, SW2={sw2:02X}")
@@ -126,6 +145,11 @@ def read_card_payload(reader_index: int = 0, start_page: int = 4, end_page: int 
     )
 
 
+def read_card_balance(reader_index: int = 0, start_page: int = 4, end_page: int = 130) -> int:
+    result = read_card_payload(reader_index=reader_index, start_page=start_page, end_page=end_page)
+    return fetch_card_balance(result.parsed_payload)
+
+
 def parse_nembed_payload(nembed_string: str) -> dict[str, Any]:
     parsed_payload = parse_nembed_compressed(nembed_string)
     if not parsed_payload:
@@ -137,6 +161,65 @@ def format_payload(parsed_payload: dict[str, Any] | None) -> str:
     if parsed_payload is None:
         return "(no parsed payload)"
     return json.dumps(parsed_payload, indent=2, sort_keys=True)
+
+
+def build_card_balance_request(parsed_payload: dict[str, Any] | None) -> tuple[str, dict[str, str]]:
+    if parsed_payload is None:
+        raise NFCReaderError("No parsed payload is available for this card.")
+
+    host = parsed_payload.get("h")
+    token = parsed_payload.get("k")
+    if not isinstance(host, str) or not host:
+        raise NFCReaderError("The card payload does not contain a valid host ('h').")
+    if not isinstance(token, str) or not token:
+        raise NFCReaderError("The card payload does not contain a valid token ('k').")
+
+    keys = Keys()
+    private_key = secp256k1.PrivateKey(bytes.fromhex(keys.private_key_hex()), raw=True)
+    token_digest = hashlib.sha256(token.encode("utf-8")).digest()
+    signature = private_key.schnorr_sign(token_digest, None, raw=True).hex()
+
+    url = f"https://{host}/.well-known/card-balance"
+    body = {
+        "token": token,
+        "pubkey": keys.public_key_hex(),
+        "sig": signature,
+    }
+    return url, body
+
+
+def extract_remote_balance(response_json: Any) -> int:
+    if not isinstance(response_json, dict):
+        raise NFCReaderError("Card balance response was not a JSON object.")
+
+    for key in ("balance", "balance_sats", "amount", "card_balance"):
+        value = response_json.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+
+    raise NFCReaderError(f"Card balance response did not include a recognized integer balance field: {response_json}")
+
+
+def fetch_card_balance(parsed_payload: dict[str, Any] | None, timeout: float = 10.0) -> int:
+    url, body = build_card_balance_request(parsed_payload)
+    try:
+        response = requests.post(url, json=body, timeout=timeout)
+    except requests.RequestException as exc:
+        raise NFCReaderError(f"Card balance request failed: {exc}") from exc
+
+    try:
+        response_json = response.json()
+    except ValueError as exc:
+        raise NFCReaderError(f"Card balance response was not valid JSON: {response.text}") from exc
+
+    if response.status_code != 200:
+        raise NFCReaderError(
+            f"Card balance request failed with HTTP {response.status_code}: {response_json}"
+        )
+
+    return extract_remote_balance(response_json)
 
 
 def create_ndef_text_record(text: str) -> bytes:

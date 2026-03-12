@@ -10,6 +10,8 @@ The NFC dependencies are installed in the local virtual environment. Run the scr
 .venv/bin/python acr122u.py read --json
 .venv/bin/python acr122u.py poll --json
 .venv/bin/python acr122u.py uid
+.venv/bin/python acr122u.py balance
+.venv/bin/python acr122u.py poll-balance
 ```
 
 Running `python3` outside the venv will miss `pyscard` and `nfcpy`.
@@ -23,6 +25,8 @@ The repo now treats the ACR122U as a PC/SC reader. If you see `PC/SC is unavaila
 - `acr122u.py read --json`: read card memory, extract `nembed`, and parse the payload.
 - `acr122u.py poll --json`: poll continuously for card insert/remove events.
 - `acr122u.py uid`: quick UID check.
+- `acr122u.py balance`: sign the card token and fetch the live balance from `/.well-known/card-balance`.
+- `acr122u.py poll-balance`: wait for cards and print the live balance for each new card.
 - `acr122u.py write "nembed1..."`: write an `nembed` string as an NDEF text record.
 
 The older `usb-*` and `read-card.py` entrypoints were removed to keep one canonical interface.
