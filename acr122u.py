@@ -1,7 +1,15 @@
 import argparse
 import asyncio
 
-from reader_core import NFCReaderError, connect, format_payload, read_card_payload, read_uid, write_ndef_text
+from reader_core import (
+    NFCReaderError,
+    connect,
+    format_payload,
+    read_card_balance,
+    read_card_payload,
+    read_uid,
+    write_ndef_text,
+)
 
 
 def print_read_result(result, show_json: bool) -> None:
@@ -79,6 +87,37 @@ def write_once(nembed_string: str) -> int:
         return 1
 
 
+def read_balance_once() -> int:
+    try:
+        balance = read_card_balance()
+        print(balance)
+        return 0
+    except NFCReaderError as exc:
+        print(exc)
+        return 1
+
+
+async def poll_balance_forever(interval: float) -> int:
+    last_uid = None
+    last_error = None
+    while True:
+        try:
+            result = read_card_payload()
+            if result.uid_hex != last_uid:
+                balance = read_card_balance()
+                print(balance)
+                last_uid = result.uid_hex
+            last_error = None
+        except NFCReaderError as exc:
+            message = str(exc)
+            if message != last_error:
+                print(message)
+            if "No card present" in message:
+                last_uid = None
+            last_error = message
+        await asyncio.sleep(interval)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Interact with an ACR122U over PC/SC.")
     subparsers = parser.add_subparsers(dest="command")
@@ -91,6 +130,12 @@ def main() -> int:
     poll_parser.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds.")
 
     subparsers.add_parser("uid", help="Read only the current card UID.")
+    subparsers.add_parser("balance", help="Fetch the current card balance from the Safebox server.")
+    balance_poll_parser = subparsers.add_parser(
+        "poll-balance",
+        help="Poll continuously and print the live balance for each new card.",
+    )
+    balance_poll_parser.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds.")
 
     write_parser = subparsers.add_parser("write", help="Write an nembed string as an NDEF text record.")
     write_parser.add_argument("nembed", help="The nembed string to write.")
@@ -107,6 +152,14 @@ def main() -> int:
             return 0
     if args.command == "uid":
         return read_uid_once()
+    if args.command == "balance":
+        return read_balance_once()
+    if args.command == "poll-balance":
+        try:
+            return asyncio.run(poll_balance_forever(interval=args.interval))
+        except KeyboardInterrupt:
+            print("done")
+            return 0
     if args.command == "write":
         return write_once(args.nembed)
     parser.print_help()
